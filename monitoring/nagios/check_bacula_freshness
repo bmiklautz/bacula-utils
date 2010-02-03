@@ -1,0 +1,25 @@
+#!/bin/bash
+
+INTERVAL='30 hours'
+
+# finds all clients which did not get backed up in the last 48 hours
+if [ "${1}" == "-v" ];then
+	echo "select * from client where clientid not in (select clientid from job where endtime > (NOW() - INTERVAL '$INTERVAL') AND jobstatus = 'T');" | psql bacula -1 -q -A -t
+fi
+COUNT=`echo "select count(*) from client where clientid not in (select clientid from job where endtime > (NOW() - INTERVAL '$INTERVAL') AND jobstatus = 'T');" | psql bacula -1 -q -A -t`
+
+if (( $COUNT > 5 )); then
+#	if [[ $out = "" ]]; then
+	if [[ $COUNT = "" ]]; then
+		echo "Unable to read output from psql"
+		exit 1
+	fi
+	echo "CRITICAL: $COUNT clients were not backed up in the last $INTERVAL"
+	exit 2;
+else
+	echo "OK: all/most clients got backed up in the last $INTERVAL"
+	exit 0
+fi
+
+
+

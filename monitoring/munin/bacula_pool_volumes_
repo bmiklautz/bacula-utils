@@ -1,0 +1,89 @@
+#!/bin/sh
+
+
+POOL=`basename $0| sed 's/^bacula_pool_volumes_//'`
+if [ ! $POOL ];then
+	exit 1
+fi
+
+case $POOL in
+ 1) POOLNAME='Default'
+    ;;
+ *) POOLNAME='Full Backups'
+    ;;
+esac
+
+
+
+
+
+if [ "$1" = "config" ]; then
+
+	GRAPHLIMIT=`echo "select maxvols from pool where poolid=$POOL;" | psql --pset t bacula | sed -e 's/ //g'`
+
+	echo "graph_title Bacula Volumes from POOL $POOLNAME"
+	echo "graph_args --base 1000 -r --lower-limit 0 --upper-limit $GRAPHLIMIT"
+	echo 'graph_vlabel Number of volumes'
+	echo 'graph_category bacula'
+	echo "graph_info Bacula Volume states for POOL $POOLNAME"
+	echo 'graph_scale no'
+        echo 'graph_order full append error recycle other unused'
+
+	echo 'full.label Full'
+	echo 'full.draw AREA'
+	echo 'full.info Full and retention time not reached'
+
+	echo 'append.label Appendable'
+	echo 'append.draw STACK'
+	echo 'append.info Volumes in appendable state'
+
+	echo 'error.label Error'
+	echo 'error.draw STACK'
+	echo 'error.info Volumes with state Error'
+
+	echo 'recycle.label Recycleable'
+	echo 'recycle.draw STACK'
+	echo 'recycle.info Volumes which are recycleable'
+
+	echo 'other.label Others'
+	echo 'other.draw STACK'
+	echo 'other.info Volumes with other state'
+
+	echo 'unused.label Unused'
+	echo 'unused.draw STACK'
+	echo 'unused.info Unused volumes'
+
+	echo 'maxvolumes.label Maximal volumes'
+	echo 'maxvolumes.draw LINE1'
+	echo 'maxvolumes.info Max Volumes'
+
+
+	exit 0
+fi
+
+# volstatus: Full, Archive, Append, Recycle, Read-Only, Disabled, Error, Busy
+
+# Full and retention time not reached
+FULL=`echo "select count(*) from media where poolid=$POOL and volstatus='Full' and (volretention||'seconds')::INTERVAL + lastwritten > NOW();" | psql --pset t bacula | sed -e 's/ //g'` 
+# Volmes which are appendable according to bacula
+APPEND=`echo "select count(*) from media where poolid=$POOL and volstatus='Append';" | psql --pset t bacula | sed -e 's/ //g'` 
+# Error Volumes from Bacula
+ERROR=`echo "select count(*) from media where poolid=$POOL and volstatus='Error';" | psql --pset t bacula | sed -e 's/ //g'` 
+# Volumes wich are marked as recycleable or have reached their retention time
+RECYCLE=`echo "select count(*) from media where poolid=$POOL and (volstatus='Recycle' or (volretention||'seconds')::INTERVAL + lastwritten < NOW()) and volstatus!='Append';" | psql --pset t bacula | sed -e 's/ //g'` 
+# Volumes which are not in state appendable or error
+OTHER=`echo "select count(*) from media where poolid=$POOL and volstatus not in ('Full', 'Append', 'Error', 'Recycle');" | psql --pset t bacula | sed -e 's/ //g'`
+# Unused and unlabeled
+UNUSED=`echo "select (select maxvols from pool where poolid=$POOL)-count(*) from media where poolid=$POOL;" | psql --pset t bacula | sed -e 's/ //g'`
+# Total Volumes
+TOTAL=`echo "select maxvols from pool where poolid=$POOL;" | psql --pset t bacula | sed -e 's/ //g'`
+
+echo "full.value $FULL"
+echo "append.value $APPEND"
+echo "error.value $ERROR"
+echo "recycle.value $RECYCLE"
+echo "other.value $OTHER"
+echo "unused.value $UNUSED"
+echo "maxvolumes.value $TOTAL"
+
+exit 0

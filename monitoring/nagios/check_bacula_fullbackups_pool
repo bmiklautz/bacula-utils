@@ -1,0 +1,19 @@
+#!/bin/bash
+
+# find count(jobid) of all media which is used in Fullbackup jobs which does not belong to the Fullbackup pool
+COUNT=`echo "SELECT count(DISTINCT j.jobid) FROM job j, jobmedia jm, media m, pool p WHERE j.jobid=jm.jobid AND jm.mediaid=m.mediaid AND m.poolid=p.poolid AND p.name NOT ilike '%full%' AND j.level='F' AND j.type='B' and j.jobstatus in ('T', 'e');" | psql bacula -1 -q -A -t`
+
+if [[ $COUNT != "0" ]]; then
+	if [[ $COUNT = "" ]]; then
+		echo "Unable to read output from psql"
+		exit 1
+	fi
+	echo "ERROR: $COUNT Full-Backup jobs use media from the wrong pool"
+	exit 2;
+else
+	echo "OK: all Full-Backup jobs only use Fullbackup media"
+	exit 0
+fi
+
+
+

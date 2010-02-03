@@ -1,0 +1,23 @@
+#!/bin/sh
+
+# available bytes
+AVAIL=`echo "select numvols * maxvolbytes from pool where name='Default'" | psql --pset t bacula | sed -e 's/ //g'`;
+
+if [ "$1" = "config" ]; then
+	echo "graph_title Clients Backuped"
+	echo "graph_args --lower-limit 0"
+	echo 'graph_vlabel Number of clients'
+	echo 'graph_category bacula'
+	echo 'graph_info Backuped clients'
+
+	echo 'clients.label Clients'
+
+	exit 0
+fi
+
+# bytes used by incremental backups
+ICLIENTS=`echo "select count(*) from client;" | psql --pset t bacula | sed -e 's/ //g'`;
+
+echo "clients.value $ICLIENTS"
+
+exit 0

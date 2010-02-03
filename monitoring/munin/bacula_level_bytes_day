@@ -1,0 +1,40 @@
+#!/bin/sh
+
+# available bytes
+AVAIL=`echo "select numvols * maxvolbytes from pool where name='Default'" | psql --pset t bacula | sed -e 's/ //g'`;
+
+if [ "$1" = "config" ]; then
+	echo "graph_title Bytes consumed by backup levels per day"
+	echo "graph_args --base 1024 --lower-limit 0"
+	echo 'graph_vlabel Bytes'
+	echo 'graph_category bacula'
+	echo 'graph_info Bytes by backup level'
+        echo 'graph_order incremental differential'
+
+	echo 'incremental.label Incremental'
+	echo 'incremental.draw AREA'
+	echo 'incremental.info Bytes used by incremental'
+
+	echo 'differential.label Differntial'
+	echo 'differential.draw STACK'
+	echo 'differential.info Bytes used by differential backups'
+
+	exit 0
+fi
+
+## Endtime is offsetted by one hour because all the backups start at about 2300
+## and we want aggregated statistics over a backup run and not over a day..
+## bytes used by incremental backups
+#IBYTES=`echo "select sum(jobbytes) from job where level='I' and type='B' and endtime + '1 hour'::Interval > date(current_timestamp)" | psql --pset t bacula | sed -e 's/ //g'`;
+## bytes used by differential backups
+#DBYTES=`echo "select sum(jobbytes) from job where level='D' and type='B' and endtime + '1 hour'::Interval > date(current_timestamp)" | psql --pset t bacula | sed -e 's/ //g'`;
+
+#Different logic here: We want to know the amount of jobbytes of the jobs between the current BackupCatalog and the last BackupCatalog assuming that BackupCatalog always gets scheduled as last job.
+
+IBYTES=`echo "select sum(jobbytes) from job where level='I' and type='B' and jobid > (select max(jobid) from job where name='BackupCatalog' and jobid != (select max(jobid) from job where name='BackupCatalog'))" | psql --pset t bacula | sed -e 's/ //g'`;
+DBYTES=`echo "select sum(jobbytes) from job where level='D' and type='B' and jobid > (select max(jobid) from job where name='BackupCatalog' and jobid != (select max(jobid) from job where name='BackupCatalog'))" | psql --pset t bacula | sed -e 's/ //g'`;
+
+echo "incremental.value $IBYTES"
+echo "differential.value $DBYTES"
+
+exit 0

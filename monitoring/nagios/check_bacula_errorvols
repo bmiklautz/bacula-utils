@@ -1,0 +1,22 @@
+#!/bin/bash
+
+COUNT=`echo "SELECT COUNT(*) FROM Media WHERE (VolErrors>0) OR (VolStatus='Error') OR (VolStatus='Disabled')" | psql bacula -1 -q -A -t`
+
+if [ "$1" == "-v" ];then
+	echo "SELECT * FROM Media WHERE (VolErrors>0) OR (VolStatus='Error') OR (VolStatus='Disabled')" | psql bacula -1 -q -A -t
+fi
+
+if [[ $COUNT != "0" ]]; then
+	if [[ $COUNT = "" ]]; then
+		echo "Unable to read output from psql"
+		exit 1
+	fi
+	echo "ERROR: $COUNT volumes with state 'Error' found"
+	exit 2;
+else
+	echo "OK: no Volumes with state 'Error' found"
+	exit 0
+fi
+
+
+

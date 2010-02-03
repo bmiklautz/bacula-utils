@@ -1,0 +1,23 @@
+#!/bin/bash
+
+# finds all clients which have no full backup
+COUNT=`echo "select count(*) from client where clientid not in (select client.clientid from client,job where job.level = 'F' and (job.jobstatus='T' or job.jobstatus='e') and job.clientid = client.clientid);" | psql bacula -1 -q -A -t`
+
+if [[ $COUNT != "0" ]]; then
+#	if [[ $out = "" ]]; then
+	if [[ $COUNT = "" ]]; then
+		echo "Unable to read output from psql"
+		exit 1
+	fi
+	if [ "$1" == "-v" ];then
+		echo `echo "select * from client where clientid not in (select client.clientid from client,job where job.level = 'F' and (job.jobstatus='T' or job.jobstatus='e') and job.clientid = client.clientid);" | psql bacula -1 -q -A -t`
+	fi
+	echo "ERROR: $COUNT clients with no Full-Backup found"
+	exit 2;
+else
+	echo "OK: all clients have a full backup"
+	exit 0
+fi
+
+
+

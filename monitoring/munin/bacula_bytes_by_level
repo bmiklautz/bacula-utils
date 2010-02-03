@@ -1,0 +1,46 @@
+#!/bin/sh
+
+# available bytes
+AVAIL=`echo "select numvols * maxvolbytes from pool where name='Default'" | psql --pset t bacula | sed -e 's/ //g'`;
+
+if [ "$1" = "config" ]; then
+	echo "graph_title Bytes consumed by backup levels"
+	echo "graph_args --base 1024 --lower-limit 0"
+	echo 'graph_vlabel Bytes'
+	echo 'graph_category bacula'
+	echo 'graph_info Bytes by backup level'
+        echo 'graph_order incremental differential avail free'
+
+	echo 'incremental.label Incremental'
+	echo 'incremental.draw AREA'
+	echo 'incremental.info Bytes used by incremental'
+
+	echo 'differential.label Differntial'
+	echo 'differential.draw STACK'
+	echo 'differential.info Bytes used by differential backups'
+
+	echo 'free.label Free'
+	echo 'free.draw STACK'
+	echo 'free.info Free bytes'
+
+	echo 'avail.label Total pool size'
+	echo 'avail.draw LINE1'
+	echo 'avail.info Available bytes in backup pool'
+
+	exit 0
+fi
+
+# bytes used by incremental backups
+IBYTES=`echo "select sum(jobbytes) from job where level='I' and type='B'" | psql --pset t bacula | sed -e 's/ //g'`;
+# bytes used by differential backups
+DBYTES=`echo "select sum(jobbytes) from job where level='D' and type='B'" | psql --pset t bacula | sed -e 's/ //g'`;
+# Free bytes
+FREE=$(($AVAIL-$IBYTES-$DBYTES));
+
+
+echo "avail.value $AVAIL"
+echo "incremental.value $IBYTES"
+echo "differential.value $DBYTES"
+echo "free.value $FREE"
+
+exit 0
