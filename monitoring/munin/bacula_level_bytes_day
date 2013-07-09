@@ -1,63 +1,92 @@
-#!/bin/sh
+#!/usr/bin/perl
 #
-# The MIT License
-#
-# Copyright (c) 2010 INQNET GmbH <oss@inqnet.at>
-#
-# Permission is hereby granted, free of charge, to any person obtaining a copy
-# of this software and associated documentation files (the "Software"), to deal
-# in the Software without restriction, including without limitation the rights
-# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-# copies of the Software, and to permit persons to whom the Software is
-# furnished to do so, subject to the following conditions:
-#
-# The above copyright notice and this permission notice shall be included in
-# all copies or substantial portions of the Software.
-#
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-# THE SOFTWARE.
+# (C) 2013, Clemens Schwaighofer
+# currently only works with PostgreSQL DB and only with ONE catalog database
 
+use strict;
+use warnings;
+use DBD::Pg;
 
-# available bytes
-AVAIL=`echo "select numvols * maxvolbytes from pool where name='Default'" | psql --pset t bacula | sed -e 's/ //g'`;
+# get the config data from the bacula dbcheck command
+my $dir_conf='/usr/sbin/dbcheck -B -c /etc/bacula/bacula-dir.conf';
+open(FP, "$dir_conf|") or die "Can't get catalog information $@";
+my %cfg;
+while (my $l = <FP>)
+{
+	if ($l =~ /(\w+)=(.+)/)
+	{
+		$cfg{$1} = $2;
+	}
+}
+close(FP);
+# set the db connect data, a) from enviroment (munin conf), local conf (bacula) or default
+my $DBUSER = $ENV{DBUSER} || $cfg{'db_user'} || 'bacula';
+my $DBPORT = $ENV{DBPORT} || $cfg{'db_port'} || '5432';
+my $DBHOST = $ENV{DBHOST} || $cfg{'db_address'} || 'localhost';
+my $DBNAME = $ENV{DBNAME} || $cfg{'db_name'} || 'bacula';
+my $DBPASS = $ENV{DBPASS} || $cfg{'db_password'};
+# the backup job, will be excluded in the bytes count
+my $CATALOG = $ENV{CATALOG} || 'CatalogBackup';
 
-if [ "$1" = "config" ]; then
-	echo "graph_title Bytes consumed by backup levels per day"
-	echo "graph_args --base 1024 --lower-limit 0"
-	echo 'graph_vlabel Bytes'
-	echo 'graph_category bacula'
-	echo 'graph_info Bytes by backup level'
-        echo 'graph_order incremental differential'
+if (defined($ARGV[0]) and ($ARGV[0] eq 'config'))
+{
+	print "graph_title Bytes consumed by backup levels per day\n";
+	print "graph_args --base 1024 --lower-limit 0\n";
+	print "graph_vlabel Bytes\n";
+	print "graph_category bacula\n";
+	print "graph_info Bytes by backup level\n";
+    print "graph_order incremental differential full\n";
 
-	echo 'incremental.label Incremental'
-	echo 'incremental.draw AREA'
-	echo 'incremental.info Bytes used by incremental'
+	print "incremental.label Incremental\n";
+	print "incremental.draw AREA\n";
+	print "incremental.info Bytes used by incremental\n";
 
-	echo 'differential.label Differntial'
-	echo 'differential.draw STACK'
-	echo 'differential.info Bytes used by differential backups'
+	print "differential.label Differntial\n";
+	print "differential.draw STACK\n";
+	print "differential.info Bytes used by differential backups\n";
 
-	exit 0
-fi
+	print "full.label Full\n";
+	print "full.draw STACK\n";
+	print "full.info Bytes used by full backups\n";
+
+	exit(0);
+}
+
+# basic data and query vars
+my $query;
+my $cursor;
+my $data;
+# connect to DB
+my $dsn = "DBI:Pg:dbname=".$DBNAME.";host=".$DBHOST.";port=".$DBPORT;
+my $dbh = DBI->connect($dsn, $DBUSER, $DBPASS) || die ("Can't connect to db $DBNAME @ $DBHOST with user $DBUSER\n");
 
 ## Endtime is offsetted by one hour because all the backups start at about 2300
-## and we want aggregated statistics over a backup run and not over a day..
-## bytes used by incremental backups
-#IBYTES=`echo "select sum(jobbytes) from job where level='I' and type='B' and endtime + '1 hour'::Interval > date(current_timestamp)" | psql --pset t bacula | sed -e 's/ //g'`;
-## bytes used by differential backups
-#DBYTES=`echo "select sum(jobbytes) from job where level='D' and type='B' and endtime + '1 hour'::Interval > date(current_timestamp)" | psql --pset t bacula | sed -e 's/ //g'`;
 
-#Different logic here: We want to know the amount of jobbytes of the jobs between the current BackupCatalog and the last BackupCatalog assuming that BackupCatalog always gets scheduled as last job.
+# Different logic here: We want to know the amount of jobbytes of the jobs between the current $CATALOG and the last $CATALOG assuming that $CATALOG always gets scheduled as last job.
+# Incremental
+$query = "SELECT COALESCE(SUM(jobbytes), 0) AS ibytes FROM job WHERE level = 'I' AND type = 'B' AND jobid > (SELECT MAX(jobid) FROM job WHERE name = ? AND jobid != (SELECT MAX(jobid) FROM job WHERE name = ?))";
+$cursor = $dbh->prepare(qq{$query}) || die ("Cannot prepare ".$DBI::errstr."\n");
+$cursor->execute($CATALOG, $CATALOG) || die ("Cannot execute ".$cursor->errstr."\n");
+$data = $cursor->fetchrow_hashref;
+my $IBYTES = $data->{'ibytes'};
+# Differential
+$query = "SELECT COALESCE(SUM(jobbytes), 0) AS dbytes FROM job WHERE level = 'D' AND type = 'B' AND jobid > (SELECT MAX(jobid) FROM job WHERE name = ? AND jobid != (SELECT MAX(jobid) FROM job WHERE name = ?))";
+$cursor = $dbh->prepare(qq{$query}) || die ("Cannot prepare ".$DBI::errstr."\n");
+$cursor->execute($CATALOG, $CATALOG) || die ("Cannot execute ".$cursor->errstr."\n");
+$data = $cursor->fetchrow_hashref;
+my $DBYTES = $data->{'dbytes'};
+# Full
+$query = "SELECT COALESCE(SUM(jobbytes), 0) AS fbytes FROM job WHERE level = 'F' AND type = 'B' AND jobid > (SELECT MAX(jobid) FROM job WHERE name = ? AND jobid != (SELECT MAX(jobid) FROM job WHERE name = ?))";
+$cursor = $dbh->prepare(qq{$query}) || die ("Cannot prepare ".$DBI::errstr."\n");
+$cursor->execute($CATALOG, $CATALOG) || die ("Cannot execute ".$cursor->errstr."\n");
+$data = $cursor->fetchrow_hashref;
+my $FBYTES = $data->{'fbytes'};
 
-IBYTES=`echo "select sum(jobbytes) from job where level='I' and type='B' and jobid > (select max(jobid) from job where name='BackupCatalog' and jobid != (select max(jobid) from job where name='BackupCatalog'))" | psql --pset t bacula | sed -e 's/ //g'`;
-DBYTES=`echo "select sum(jobbytes) from job where level='D' and type='B' and jobid > (select max(jobid) from job where name='BackupCatalog' and jobid != (select max(jobid) from job where name='BackupCatalog'))" | psql --pset t bacula | sed -e 's/ //g'`;
+print "incremental.value $IBYTES\n";
+print "differential.value $DBYTES\n";
+print "full.value $FBYTES\n";
 
-echo "incremental.value $IBYTES"
-echo "differential.value $DBYTES"
+$cursor->finish;
+$dbh->disconnect();
 
-exit 0
+exit(0);

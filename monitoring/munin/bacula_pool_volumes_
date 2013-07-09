@@ -1,112 +1,162 @@
-#!/bin/sh
+#!/usr/bin/perl
 #
-# The MIT License
-#
-# Copyright (c) 2010 INQNET GmbH <oss@inqnet.at>
-#
-# Permission is hereby granted, free of charge, to any person obtaining a copy
-# of this software and associated documentation files (the "Software"), to deal
-# in the Software without restriction, including without limitation the rights
-# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-# copies of the Software, and to permit persons to whom the Software is
-# furnished to do so, subject to the following conditions:
-#
-# The above copyright notice and this permission notice shall be included in
-# all copies or substantial portions of the Software.
-#
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-# THE SOFTWARE.
+# (C) 2013, Clemens Schwaighofer
+# currently only works with PostgreSQL DB and only with ONE catalog database
+
+use strict;
+use warnings;
+use DBD::Pg;
+use File::Basename;
+
+# get the config data from the bacula dbcheck command
+my $dir_conf='/usr/sbin/dbcheck -B -c /etc/bacula/bacula-dir.conf';
+open(FP, "$dir_conf|") or die "Can't get catalog information $@";
+my %cfg;
+while (my $l = <FP>)
+{
+	if ($l =~ /(\w+)=(.+)/)
+	{
+		$cfg{$1} = $2;
+	}
+}
+close(FP);
+# set the db connect data, a) from enviroment (munin conf), local conf (bacula) or default
+my $DBUSER = $ENV{DBUSER} || $cfg{'db_user'} || 'bacula';
+my $DBPORT = $ENV{DBPORT} || $cfg{'db_port'} || '5432';
+my $DBHOST = $ENV{DBHOST} || $cfg{'db_address'} || 'localhost';
+my $DBNAME = $ENV{DBNAME} || $cfg{'db_name'} || 'bacula';
+my $DBPASS = $ENV{DBPASS} || $cfg{'db_password'};
 
 
+my $POOLNAME = File::Basename::basename($0);
+$POOLNAME =~ s/^bacula_pool_volumes_//;
+exit(1) if (!$POOLNAME);
 
-POOL=`basename $0| sed 's/^bacula_pool_volumes_//'`
-if [ ! $POOL ];then
-	exit 1
-fi
+# basic data and query vars
+my $query;
+my $cursor;
+my $data;
+# connect to DB
+my $dsn = "DBI:Pg:dbname=".$DBNAME.";host=".$DBHOST.";port=".$DBPORT;
+my $dbh = DBI->connect($dsn, $DBUSER, $DBPASS) || die ("Can't connect to db $DBNAME @ $DBHOST with user $DBUSER\n");
 
-case $POOL in
- 1) POOLNAME='Default'
-    ;;
- *) POOLNAME='Full Backups'
-    ;;
-esac
+# available bytes
+$query = "SELECT poolid FROM pool WHERE name = ?";
+$cursor = $dbh->prepare(qq{$query}) || die ("Cannot prepare ".$DBI::errstr."\n");
+$cursor->execute($POOLNAME) || die ("Cannot execute ".$cursor->errstr."\n");
+$data = $cursor->fetchrow_hashref;
+my $POOLID = $data->{'poolid'} || 0;
 
+# max volumes in this pool, also used as TOTAL for normal output
+$query = "SELECT maxvols FROM pool WHERE poolid = ?";
+$cursor = $dbh->prepare(qq{$query}) || die ("Cannot prepare ".$DBI::errstr."\n");
+$cursor->execute($POOLID) || die ("Cannot execute ".$cursor->errstr."\n");
+$data = $cursor->fetchrow_hashref;
+my $GRAPHLIMIT = $data->{'maxvols'} || 0;
 
+if (defined($ARGV[0]) and ($ARGV[0] eq 'config'))
+{
 
+	print "graph_title Bacula Volumes from POOL $POOLNAME\n";
+	print "graph_args --base 1000 -r --lower-limit 0 --upper-limit $GRAPHLIMIT\n";
+	print "graph_vlabel Number of volumes\n";
+	print "graph_category bacula\n";
+	print "graph_info Bacula Volume states for POOL $POOLNAME\n";
+	print "graph_scale no\n";
+    print "graph_order full append used error recycle other unused\n";
 
+	print "full.label Full\n";
+	print "full.draw AREA\n";
+	print "full.info Full and retention time not reached\n";
 
-if [ "$1" = "config" ]; then
+	print "append.label Appendable\n";
+	print "append.draw STACK\n";
+	print "append.info Volumes in appendable state\n";
 
-	GRAPHLIMIT=`echo "select maxvols from pool where poolid=$POOL;" | psql --pset t bacula | sed -e 's/ //g'`
+	print "used.label Used\n";
+	print "used.draw STACK\n";
+	print "used.info Volumes with state Used\n";
 
-	echo "graph_title Bacula Volumes from POOL $POOLNAME"
-	echo "graph_args --base 1000 -r --lower-limit 0 --upper-limit $GRAPHLIMIT"
-	echo 'graph_vlabel Number of volumes'
-	echo 'graph_category bacula'
-	echo "graph_info Bacula Volume states for POOL $POOLNAME"
-	echo 'graph_scale no'
-        echo 'graph_order full append error recycle other unused'
+	print "error.label Error\n";
+	print "error.draw STACK\n";
+	print "error.info Volumes with state Error\n";
 
-	echo 'full.label Full'
-	echo 'full.draw AREA'
-	echo 'full.info Full and retention time not reached'
+	print "recycle.label Recycleable\n";
+	print "recycle.draw STACK\n";
+	print "recycle.info Volumes which are recycleable\n";
 
-	echo 'append.label Appendable'
-	echo 'append.draw STACK'
-	echo 'append.info Volumes in appendable state'
+	print "other.label Others\n";
+	print "other.draw STACK\n";
+	print "other.info Volumes with other state\n";
 
-	echo 'error.label Error'
-	echo 'error.draw STACK'
-	echo 'error.info Volumes with state Error'
+	print "unused.label Unused\n";
+	print "unused.draw STACK\n";
+	print "unused.info Unused volumes\n";
 
-	echo 'recycle.label Recycleable'
-	echo 'recycle.draw STACK'
-	echo 'recycle.info Volumes which are recycleable'
+	print "maxvolumes.label Maximal volumes\n";
+	print "maxvolumes.draw LINE1\n";
+	print "maxvolumes.info Max Volumes\n";
 
-	echo 'other.label Others'
-	echo 'other.draw STACK'
-	echo 'other.info Volumes with other state'
-
-	echo 'unused.label Unused'
-	echo 'unused.draw STACK'
-	echo 'unused.info Unused volumes'
-
-	echo 'maxvolumes.label Maximal volumes'
-	echo 'maxvolumes.draw LINE1'
-	echo 'maxvolumes.info Max Volumes'
-
-
-	exit 0
-fi
+	$cursor->finish;
+	$dbh->disconnect();
+	exit(0);
+}
 
 # volstatus: Full, Archive, Append, Recycle, Read-Only, Disabled, Error, Busy
 
 # Full and retention time not reached
-FULL=`echo "select count(*) from media where poolid=$POOL and volstatus='Full' and (volretention||'seconds')::INTERVAL + lastwritten > NOW();" | psql --pset t bacula | sed -e 's/ //g'` 
+$query = "SELECT count(*) AS full FROM media WHERE poolid = ? AND volstatus = 'Full' and (volretention || 'seconds')::INTERVAL + lastwritten > NOW()";
+$cursor = $dbh->prepare(qq{$query}) || die ("Cannot prepare ".$DBI::errstr."\n");
+$cursor->execute($POOLID) || die ("Cannot execute ".$cursor->errstr."\n");
+$data = $cursor->fetchrow_hashref;
+my $FULL = $data->{'full'} || 0;
 # Volmes which are appendable according to bacula
-APPEND=`echo "select count(*) from media where poolid=$POOL and volstatus='Append';" | psql --pset t bacula | sed -e 's/ //g'` 
+$query = "SELECT count(*) AS append FROM media WHERE poolid = ? AND volstatus = 'Append'";
+$cursor = $dbh->prepare(qq{$query}) || die ("Cannot prepare ".$DBI::errstr."\n");
+$cursor->execute($POOLID) || die ("Cannot execute ".$cursor->errstr."\n");
+$data = $cursor->fetchrow_hashref;
+my $APPEND = $data->{'append'} || 0;
 # Error Volumes from Bacula
-ERROR=`echo "select count(*) from media where poolid=$POOL and volstatus='Error';" | psql --pset t bacula | sed -e 's/ //g'` 
+$query = "SELECT count(*) AS error FROM media WHERE poolid = ? AND volstatus = 'Error'";
+$cursor = $dbh->prepare(qq{$query}) || die ("Cannot prepare ".$DBI::errstr."\n");
+$cursor->execute($POOLID) || die ("Cannot execute ".$cursor->errstr."\n");
+$data = $cursor->fetchrow_hashref;
+my $ERROR = $data->{'error'} || 0;
+# Used Volumes from Bacula
+$query = "SELECT count(*) AS used FROM media WHERE poolid = ? AND volstatus = 'Used'";
+$cursor = $dbh->prepare(qq{$query}) || die ("Cannot prepare ".$DBI::errstr."\n");
+$cursor->execute($POOLID) || die ("Cannot execute ".$cursor->errstr."\n");
+$data = $cursor->fetchrow_hashref;
+my $USED = $data->{'used'} || 0;
 # Volumes wich are marked as recycleable or have reached their retention time
-RECYCLE=`echo "select count(*) from media where poolid=$POOL and (volstatus='Recycle' or (volretention||'seconds')::INTERVAL + lastwritten < NOW()) and volstatus!='Append';" | psql --pset t bacula | sed -e 's/ //g'` 
+$query = "SELECT count(*) AS recycle FROM media WHERE poolid = ? AND (volstatus = 'Recycle' OR (volretention || 'seconds')::INTERVAL + lastwritten < NOW()) AND volstatus != 'Append'";
+$cursor = $dbh->prepare(qq{$query}) || die ("Cannot prepare ".$DBI::errstr."\n");
+$cursor->execute($POOLID) || die ("Cannot execute ".$cursor->errstr."\n");
+$data = $cursor->fetchrow_hashref;
+my $RECYCLE = $data->{'recycle'} || 0;
 # Volumes which are not in state appendable or error
-OTHER=`echo "select count(*) from media where poolid=$POOL and volstatus not in ('Full', 'Append', 'Error', 'Recycle');" | psql --pset t bacula | sed -e 's/ //g'`
+$query = "SELECT count(*) AS other FROM media WHERE poolid = ? AND volstatus NOT IN ('Used', 'Full', 'Append', 'Error', 'Recycle')";
+$cursor = $dbh->prepare(qq{$query}) || die ("Cannot prepare ".$DBI::errstr."\n");
+$cursor->execute($POOLID) || die ("Cannot execute ".$cursor->errstr."\n");
+$data = $cursor->fetchrow_hashref;
+my $OTHER = $data->{'other'} || 0;
 # Unused and unlabeled
-UNUSED=`echo "select (select maxvols from pool where poolid=$POOL)-count(*) from media where poolid=$POOL;" | psql --pset t bacula | sed -e 's/ //g'`
-# Total Volumes
-TOTAL=`echo "select maxvols from pool where poolid=$POOL;" | psql --pset t bacula | sed -e 's/ //g'`
+$query = "SELECT CASE WHEN unused < 0 THEN 0 ELSE unused END AS unused FROM (SELECT (SELECT maxvols FROM pool WHERE poolid = ?) - COUNT(*) AS unused FROM media WHERE poolid = ?) AS sub";
+$cursor = $dbh->prepare(qq{$query}) || die ("Cannot prepare ".$DBI::errstr."\n");
+$cursor->execute($POOLID, $POOLID) || die ("Cannot execute ".$cursor->errstr."\n");
+$data = $cursor->fetchrow_hashref;
+my $UNUSED = $data->{'unused'} || 0;
 
-echo "full.value $FULL"
-echo "append.value $APPEND"
-echo "error.value $ERROR"
-echo "recycle.value $RECYCLE"
-echo "other.value $OTHER"
-echo "unused.value $UNUSED"
-echo "maxvolumes.value $TOTAL"
+print "full.value $FULL\n";
+print "append.value $APPEND\n";
+print "used.value $USED\n";
+print "error.value $ERROR\n";
+print "recycle.value $RECYCLE\n";
+print "other.value $OTHER\n";
+print "unused.value $UNUSED\n";
+print "maxvolumes.value $GRAPHLIMIT\n";
 
-exit 0
+$cursor->finish;
+$dbh->disconnect();
+
+exit(0);
