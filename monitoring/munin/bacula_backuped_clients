@@ -1,45 +1,59 @@
-#!/bin/sh
+#!/usr/bin/perl
 #
-# The MIT License
-# 
-# Copyright (c) 2010 INQNET GmbH <oss@inqnet.at>
-# 
-# Permission is hereby granted, free of charge, to any person obtaining a copy
-# of this software and associated documentation files (the "Software"), to deal
-# in the Software without restriction, including without limitation the rights
-# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-# copies of the Software, and to permit persons to whom the Software is
-# furnished to do so, subject to the following conditions:
-# 
-# The above copyright notice and this permission notice shall be included in
-# all copies or substantial portions of the Software.
-# 
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-# THE SOFTWARE.
+# (C) 2013, Clemens Schwaighofer
+# currently only works with PostgreSQL DB and only with ONE catalog database
 
-# available bytes
-AVAIL=`echo "select numvols * maxvolbytes from pool where name='Default'" | psql --pset t bacula | sed -e 's/ //g'`;
+use strict;
+use warnings;
+use DBD::Pg;
 
-if [ "$1" = "config" ]; then
-	echo "graph_title Clients Backuped"
-	echo "graph_args --lower-limit 0"
-	echo 'graph_vlabel Number of clients'
-	echo 'graph_category bacula'
-	echo 'graph_info Backuped clients'
+# get the config data from the bacula dbcheck command
+my $dir_conf='/usr/sbin/dbcheck -B -c /etc/bacula/bacula-dir.conf';
+open(FP, "$dir_conf|") or die "Can't get catalog information $@";
+my %cfg;
+while (my $l = <FP>)
+{
+	if ($l =~ /(\w+)=(.+)/)
+	{
+		$cfg{$1} = $2;
+	}
+}
+close(FP);
+# set the db connect data, a) from enviroment (munin conf), local conf (bacula) or default
+my $DBUSER = $ENV{DBUSER} || $cfg{'db_user'} || 'bacula';
+my $DBPORT = $ENV{DBPORT} || $cfg{'db_port'} || '5432';
+my $DBHOST = $ENV{DBHOST} || $cfg{'db_address'} || 'localhost';
+my $DBNAME = $ENV{DBNAME} || $cfg{'db_name'} || 'bacula';
+my $DBPASS = $ENV{DBPASS} || $cfg{'db_password'};
 
-	echo 'clients.label Clients'
+if (defined($ARGV[0]) and ($ARGV[0] eq 'config'))
+{
+	print "graph_title Clients Backuped\n";
+	print "graph_args --lower-limit 0\n";
+	print "graph_vlabel Number of clients\n";
+	print "graph_category bacula\n";
+	print "graph_info Backuped clients\n";
 
-	exit 0
-fi
+	print "clients.label Clients\n";
+
+	exit(0);
+}
+
+# basic data and query vars
+my $query;
+my $cursor;
+my $data;
+# connect to DB
+my $dsn = "DBI:Pg:dbname=".$DBNAME.";host=".$DBHOST.";port=".$DBPORT;
+my $dbh = DBI->connect($dsn, $DBUSER, $DBPASS) || die ("Can't connect to db $DBNAME @ $DBHOST with user $DBUSER\n");
 
 # bytes used by incremental backups
-ICLIENTS=`echo "select count(*) from client;" | psql --pset t bacula | sed -e 's/ //g'`;
+$query = "SELECT COUNT(*) AS iclients FROM client";
+$cursor = $dbh->prepare(qq{$query}) || die ("Cannot prepare ".$DBI::errstr."\n");
+$cursor->execute() || die ("Cannot execute ".$cursor->errstr."\n");
+$data = $cursor->fetchrow_hashref;
+my $ICLIENTS = $data->{'iclients'};
 
-echo "clients.value $ICLIENTS"
+print "clients.value $ICLIENTS\n";
 
-exit 0
+exit(0);
